@@ -4,7 +4,7 @@ username="torrserver"
 dirInstall="/opt/torrserver"
 serviceName="torrserver"
 scriptname=$(basename "$0")
-architecture="arm64"
+binName="TorrServer-linux-arm64"
 
 # Цвета
 RED='\033[0;31m'
@@ -13,26 +13,18 @@ YELLOW='\033[0;33m'
 NC='\033[0m'
 
 # ---------------------------------------------------------
-# Функции
+# Вспомогательные функции
 # ---------------------------------------------------------
 
 colorize() {
-    color=$1
-    text=$2
+    color="$1"
+    text="$2"
 
-    case $color in
-        red)
-            printf "${RED}%s${NC}" "$text"
-            ;;
-        green)
-            printf "${GREEN}%s${NC}" "$text"
-            ;;
-        yellow)
-            printf "${YELLOW}%s${NC}" "$text"
-            ;;
-        *)
-            printf "%s" "$text"
-            ;;
+    case "$color" in
+        red)    printf "${RED}%s${NC}" "$text" ;;
+        green)  printf "${GREEN}%s${NC}" "$text" ;;
+        yellow) printf "${YELLOW}%s${NC}" "$text" ;;
+        *)      printf "%s" "$text" ;;
     esac
 }
 
@@ -50,7 +42,6 @@ addUser() {
 
         if grep -q "^$username:" /etc/passwd; then
             echo " - Пользователь $username уже существует!"
-            return 0
         else
             adduser -D -H -h "$dirInstall" -s /bin/false -G nogroup "$username"
 
@@ -66,44 +57,25 @@ addUser() {
 }
 
 delUser() {
-    if isRoot; then
-        [ "$username" = "root" ] && return 0
-
+    if isRoot && [ "$username" != "root" ]; then
         if grep -q "^$username:" /etc/passwd; then
             deluser "$username" 2>/dev/null
-
-            if [ $? -eq 0 ]; then
-                echo " - Пользователь $username удален!"
-            else
-                echo " - Не удалось удалить пользователя $username!"
-            fi
-        else
-            echo " - Пользователь $username не найден!"
+            echo " - Пользователь $username удален!"
         fi
     fi
 }
 
 # ---------------------------------------------------------
-# Проверка процесса
+# Проверка установлен ли TorrServer
 # ---------------------------------------------------------
 
-checkRunning() {
-    pidof TorrServer-linux-arm64 2>/dev/null | head -n 1
-}
-
-# ---------------------------------------------------------
-# Получение IP
-# ---------------------------------------------------------
-
-getIP() {
-    iface=$(ip route | grep default | awk '{print $5}' | head -n 1)
-
-    if [ -n "$iface" ]; then
-        ip addr show dev "$iface" \
-            | grep 'inet ' \
-            | awk '{print $2}' \
-            | cut -d/ -f1 \
-            | head -n 1
+checkInstalled() {
+    if [ -f "$dirInstall/$binName" ]; then
+        echo " - TorrServer найден в директории $dirInstall"
+        return 0
+    else
+        echo " - TorrServer не найден"
+        return 1
     fi
 }
 
@@ -123,17 +95,17 @@ checkInternet() {
 }
 
 # ---------------------------------------------------------
-# Получение последней версии TorrServer
+# Получение последней версии
 # ---------------------------------------------------------
 
 getLatestRelease() {
     curl -fsSL \
-        --connect-timeout 10 \
+        --connect-timeout 15 \
         --max-time 30 \
-        https://api.github.com/repos/YouROK/TorrServer/releases/latest \
-        | grep '"tag_name":' \
-        | sed -E 's/.*"([^"]+)".*/\1/' \
-        | head -n 1
+        "https://api.github.com/repos/YouROK/TorrServer/releases/latest" \
+        2>/dev/null |
+        sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' |
+        head -n 1
 }
 
 # ---------------------------------------------------------
@@ -141,29 +113,25 @@ getLatestRelease() {
 # ---------------------------------------------------------
 
 stopTorrServer() {
+
     echo " - Останавливаем TorrServer..."
 
     /etc/init.d/$serviceName stop 2>/dev/null
 
-    # Ждём завершения процесса
     i=0
 
-    while pidof TorrServer-linux-arm64 >/dev/null 2>&1 && [ $i -lt 10 ]; do
+    while pidof "$binName" >/dev/null 2>&1 && [ "$i" -lt 10 ]; do
         sleep 1
         i=$((i + 1))
     done
 
-    # Если процесс всё ещё работает
-    if pidof TorrServer-linux-arm64 >/dev/null 2>&1; then
-        echo " - Процесс не завершился. Принудительно останавливаем..."
-
-        killall TorrServer-linux-arm64 2>/dev/null
-
+    if pidof "$binName" >/dev/null 2>&1; then
+        echo " - Принудительно завершаем процесс..."
+        killall "$binName" 2>/dev/null
         sleep 2
     fi
 
-    # Финальная проверка
-    if pidof TorrServer-linux-arm64 >/dev/null 2>&1; then
+    if pidof "$binName" >/dev/null 2>&1; then
         echo " - Не удалось остановить TorrServer!"
         return 1
     fi
@@ -172,24 +140,21 @@ stopTorrServer() {
 }
 
 # ---------------------------------------------------------
-# Скачивание TorrServer
+# Скачивание последней версии
 # ---------------------------------------------------------
 
 downloadTorrServer() {
-
-    binName="TorrServer-linux-arm64"
 
     if [ ! -d "$dirInstall" ]; then
         mkdir -p "$dirInstall"
     fi
 
-    echo " - Определяем последнюю версию TorrServer..."
+    echo " - Проверяем последнюю версию TorrServer..."
 
-    latestVersion=$(getLatestRelease)
+    latestVersion="$(getLatestRelease)"
 
     if [ -z "$latestVersion" ]; then
-        echo " - Не удалось определить последнюю версию!"
-        echo " - Проверьте доступ к GitHub."
+        echo " - Не удалось определить последнюю версию TorrServer!"
         return 1
     fi
 
@@ -199,8 +164,8 @@ downloadTorrServer() {
 
     tempFile="$dirInstall/${binName}.new"
 
-    echo " - Загружаем TorrServer..."
-    echo " - URL: $urlBin"
+    echo " - Загружаем:"
+    echo "   $urlBin"
 
     rm -f "$tempFile"
 
@@ -214,66 +179,44 @@ downloadTorrServer() {
 
         echo " - Ошибка загрузки TorrServer!"
         rm -f "$tempFile"
-
         return 1
     fi
 
-    # Проверяем, что файл существует
-    if [ ! -f "$tempFile" ]; then
-        echo " - Загруженный файл не найден!"
-        rm -f "$tempFile"
-
-        return 1
-    fi
-
-    # Проверяем, что файл не пустой
     if [ ! -s "$tempFile" ]; then
         echo " - Загруженный файл пустой!"
         rm -f "$tempFile"
-
-        return 1
-    fi
-
-    # Проверяем минимальный размер файла
-    fileSize=$(wc -c < "$tempFile" 2>/dev/null)
-
-    if [ "$fileSize" -lt 1000000 ]; then
-        echo " - Ошибка: загруженный файл слишком маленький ($fileSize байт)!"
-        echo " - Возможно, GitHub вернул ошибку вместо бинарника."
-
-        rm -f "$tempFile"
-
         return 1
     fi
 
     chmod +x "$tempFile"
 
-    # Проверяем ELF-файл
+    # Проверяем, что это действительно ARM64 ELF,
+    # если утилита file присутствует.
     if command -v file >/dev/null 2>&1; then
-        fileInfo=$(file "$tempFile" 2>/dev/null)
+
+        fileInfo="$(file "$tempFile" 2>/dev/null)"
 
         echo " - Тип файла: $fileInfo"
 
         echo "$fileInfo" | grep -qi "ELF" || {
-            echo " - Ошибка: загруженный файл не является ELF-бинарником!"
+            echo " - Загруженный файл не является ELF!"
             rm -f "$tempFile"
             return 1
         }
     fi
 
-    # Только теперь заменяем старый бинарник
+    # Только после успешной загрузки заменяем старый файл.
     mv -f "$tempFile" "$dirInstall/$binName"
 
     if [ $? -ne 0 ]; then
-        echo " - Не удалось заменить старый TorrServer!"
+        echo " - Не удалось заменить бинарник!"
         rm -f "$tempFile"
-
         return 1
     fi
 
     chmod +x "$dirInstall/$binName"
 
-    echo " - TorrServer $latestVersion успешно установлен!"
+    echo " - TorrServer $latestVersion установлен!"
 
     return 0
 }
@@ -290,8 +233,9 @@ UpdateVersion() {
     fi
 
     if ! downloadTorrServer; then
-        echo " - Обновление не выполнено!"
-        echo " - Запускаем установленную версию..."
+
+        echo " - Обновление не удалось!"
+        echo " - Запускаем предыдущую версию..."
 
         /etc/init.d/$serviceName start
 
@@ -304,7 +248,7 @@ UpdateVersion() {
 
     sleep 2
 
-    if pidof TorrServer-linux-arm64 >/dev/null 2>&1; then
+    if pidof "$binName" >/dev/null 2>&1; then
         echo " - TorrServer успешно запущен!"
         echo " - TorrServer обновлен!"
         return 0
@@ -323,8 +267,7 @@ cleanup() {
     /etc/init.d/$serviceName stop 2>/dev/null
     /etc/init.d/$serviceName disable 2>/dev/null
 
-    rm -f /etc/init.d/$serviceName 2>/dev/null
-
+    rm -f "/etc/init.d/$serviceName" 2>/dev/null
     rm -rf "$dirInstall" 2>/dev/null
 
     delUser
@@ -333,7 +276,6 @@ cleanup() {
 uninstall() {
 
     if ! checkInstalled; then
-        echo " - TorrServer не установлен."
         return
     fi
 
@@ -346,17 +288,183 @@ uninstall() {
 
     read -p " Вы уверены что хотите удалить программу? ($(colorize red Y)es/$(colorize yellow N)o) " answer_del </dev/tty
 
-    if [ "$answer_del" != "${answer_del#[YyДд]}" ]; then
+    case "$answer_del" in
+        [YyДд]*)
+            cleanup
+            echo " - TorrServer удален из системы!"
+            ;;
+        *)
+            echo " - Удаление отменено."
+            ;;
+    esac
+}
 
-        cleanup
+# ---------------------------------------------------------
+# Создание init.d
+# ---------------------------------------------------------
 
-        echo " - TorrServer удален из системы!"
-        echo ""
+createService() {
 
+    cat > "/etc/init.d/$serviceName" << EOF
+#!/bin/sh /etc/rc.common
+
+START=99
+STOP=10
+
+USE_PROCD=1
+
+PROG="$dirInstall/$binName"
+
+start_service() {
+    procd_open_instance
+
+    procd_set_param command \$PROG $authOptions
+
+    procd_set_param respawn
+
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+
+    procd_close_instance
+}
+
+stop_service() {
+    killall $binName 2>/dev/null
+}
+
+reload_service() {
+    stop
+    start
+}
+EOF
+
+    chmod +x "/etc/init.d/$serviceName"
+}
+
+# ---------------------------------------------------------
+# Установка
+# ---------------------------------------------------------
+
+installTorrServer() {
+
+    echo " Устанавливаем и настраиваем TorrServer..."
+
+    if [ -f "$dirInstall/$binName" ]; then
+
+        read -p " TorrServer уже установлен. Хотите обновить? ($(colorize green Y)es/$(colorize yellow N)o) " answer_up </dev/tty
+
+        case "$answer_up" in
+            [YyДд]*)
+                UpdateVersion
+                return
+                ;;
+            *)
+                echo " - Обновление отменено."
+                return
+                ;;
+        esac
+    fi
+
+    mkdir -p "$dirInstall"
+
+    if ! downloadTorrServer; then
+        echo " - Установка отменена!"
+        exit 1
+    fi
+
+    addUser
+
+    # -----------------------------------------------------
+    # Порт
+    # -----------------------------------------------------
+
+    read -p " Хотите изменить порт для TorrServer (по умолчанию 8090)? ($(colorize yellow Y)es/$(colorize green N)o) " answer_cp </dev/tty
+
+    case "$answer_cp" in
+        [YyДд]*)
+            read -p " Введите номер порта: " answer_port </dev/tty
+            servicePort="$answer_port"
+            ;;
+        *)
+            servicePort="8090"
+            ;;
+    esac
+
+    # -----------------------------------------------------
+    # Авторизация
+    # -----------------------------------------------------
+
+    read -p " Включить авторизацию на сервере? ($(colorize green Y)es/$(colorize yellow N)o) " answer_auth </dev/tty
+
+    case "$answer_auth" in
+        [YyДд]*)
+
+            read -p " Пользователь: " answer_user </dev/tty
+            isAuthUser="$answer_user"
+
+            read -p " Пароль: " answer_pass </dev/tty
+            isAuthPass="$answer_pass"
+
+            echo " Сохраняем $isAuthUser:$isAuthPass в ${dirInstall}/accs.db"
+
+            printf '{\n  "%s": "%s"\n}\n' \
+                "$isAuthUser" "$isAuthPass" > "$dirInstall/accs.db"
+
+            authOptions="--port $servicePort --path $dirInstall --httpauth"
+            ;;
+
+        *)
+            authOptions="--port $servicePort --path $dirInstall"
+            ;;
+    esac
+
+    # -----------------------------------------------------
+    # Сервис OpenWrt
+    # -----------------------------------------------------
+
+    createService
+
+    /etc/init.d/$serviceName enable
+    /etc/init.d/$serviceName start
+
+    sleep 2
+
+    serverIP="$(getIP)"
+
+    echo ""
+
+    if pidof "$binName" >/dev/null 2>&1; then
+        echo " TorrServer успешно запущен!"
     else
-        echo " - Удаление отменено."
+        echo " ВНИМАНИЕ: TorrServer не запустился!"
+    fi
+
+    echo ""
+    echo " TorrServer установлен в директории ${dirInstall}"
+    echo ""
+    echo " Теперь вы можете открыть:"
+    echo " http://${serverIP}:${servicePort}"
+    echo ""
+
+    if [ -n "$isAuthUser" ]; then
+        echo " Для авторизации используйте пользователя «$isAuthUser»"
+        echo " Пароль: «$isAuthPass»"
         echo ""
     fi
+}
+
+# ---------------------------------------------------------
+# Первичная проверка
+# ---------------------------------------------------------
+
+initialCheck() {
+
+    if ! isRoot; then
+        echo " Вам нужно запустить скрипт от root."
+        exit 1
+    fi
+
+    checkInternet
 }
 
 # ---------------------------------------------------------
@@ -374,195 +482,15 @@ helpUsage() {
 }
 
 # ---------------------------------------------------------
-# Проверка установки
+# Аргументы
 # ---------------------------------------------------------
 
-checkInstalled() {
-
-    if [ -f "$dirInstall/TorrServer-linux-arm64" ]; then
-        echo " - TorrServer найден в директории $dirInstall"
-        return 0
-    else
-        echo " - TorrServer не найден"
-        return 1
-    fi
-}
-
-# ---------------------------------------------------------
-# Установка
-# ---------------------------------------------------------
-
-installTorrServer() {
-
-    echo " Устанавливаем и настраиваем TorrServer..."
-
-    if [ -f "$dirInstall/TorrServer-linux-arm64" ]; then
-
-        read -p " TorrServer уже установлен. Хотите обновить? ($(colorize green Y)es/$(colorize yellow N)o) " answer_up </dev/tty
-
-        if [ "$answer_up" != "${answer_up#[YyДд]}" ]; then
-            UpdateVersion
-            return
-        fi
-
-    fi
-
-    binName="TorrServer-linux-arm64"
-
-    if [ ! -d "$dirInstall" ]; then
-        mkdir -p "$dirInstall"
-    fi
-
-    # Установка новой версии
-    if ! downloadTorrServer; then
-        echo " - Установка TorrServer отменена!"
-        exit 1
-    fi
-
-    addUser
-
-    # -----------------------------------------------------
-    # Порт
-    # -----------------------------------------------------
-
-    read -p " Хотите изменить порт для TorrServer (по умолчанию 8090)? ($(colorize yellow Y)es/$(colorize green N)o) " answer_cp </dev/tty
-
-    if [ "$answer_cp" != "${answer_cp#[YyДд]}" ]; then
-
-        read -p " Введите номер порта: " answer_port </dev/tty
-
-        servicePort=$answer_port
-
-    else
-
-        servicePort="8090"
-
-    fi
-
-    # -----------------------------------------------------
-    # Авторизация
-    # -----------------------------------------------------
-
-    read -p " Включить авторизацию на сервере? ($(colorize green Y)es/$(colorize yellow N)o) " answer_auth </dev/tty
-
-    if [ "$answer_auth" != "${answer_auth#[YyДд]}" ]; then
-
-        read -p " Пользователь: " answer_user </dev/tty
-        isAuthUser=$answer_user
-
-        read -p " Пароль: " answer_pass </dev/tty
-        isAuthPass=$answer_pass
-
-        echo " Сохраняем $isAuthUser:$isAuthPass в ${dirInstall}/accs.db"
-
-        echo -e "{\n  \"$isAuthUser\": \"$isAuthPass\"\n}" > "$dirInstall/accs.db"
-
-        authOptions="--port $servicePort --path $dirInstall --httpauth"
-
-    else
-
-        authOptions="--port $servicePort --path $dirInstall"
-
-    fi
-
-    # -----------------------------------------------------
-    # OpenWrt init script
-    # -----------------------------------------------------
-
-    cat << EOF > /etc/init.d/$serviceName
-#!/bin/sh /etc/rc.common
-
-START=99
-STOP=10
-
-USE_PROCD=1
-
-PROG="$dirInstall/TorrServer-linux-arm64"
-
-start_service() {
-    procd_open_instance
-
-    procd_set_param command \$PROG $authOptions
-
-    procd_set_param respawn
-
-    procd_set_param stdout 1
-    procd_set_param stderr 1
-
-    procd_close_instance
-}
-
-stop_service() {
-    killall TorrServer-linux-arm64 2>/dev/null
-}
-
-reload_service() {
-    stop
-    start
-}
-EOF
-
-    chmod +x /etc/init.d/$serviceName
-
-    /etc/init.d/$serviceName enable
-    /etc/init.d/$serviceName start
-
-    sleep 2
-
-    serverIP=$(getIP)
-
-    echo ""
-
-    if pidof TorrServer-linux-arm64 >/dev/null 2>&1; then
-        echo " TorrServer успешно запущен!"
-    else
-        echo " ВНИМАНИЕ: TorrServer не запустился!"
-    fi
-
-    echo ""
-
-    echo " TorrServer установлен в директории ${dirInstall}"
-
-    echo ""
-
-    echo " Теперь вы можете открыть браузер по адресу:"
-    echo " http://${serverIP}:${servicePort}"
-
-    echo ""
-
-    if [ -n "$isAuthUser" ]; then
-        echo " Для авторизации используйте пользователя «$isAuthUser» с паролем «$isAuthPass»"
-        echo ""
-    fi
-}
-
-# ---------------------------------------------------------
-# Первичная проверка
-# ---------------------------------------------------------
-
-initialCheck() {
-
-    if ! isRoot; then
-        echo " Вам нужно запустить скрипт от root."
-        echo " Пример: sh $scriptname"
-        exit 1
-    fi
-
-    checkInternet
-}
-
-# ---------------------------------------------------------
-# Основной код
-# ---------------------------------------------------------
-
-case $1 in
+case "$1" in
 
     -i|--install|install)
 
         initialCheck
-
         installTorrServer
-
         exit
         ;;
 
@@ -580,21 +508,19 @@ case $1 in
     -r|--remove|remove)
 
         uninstall
-
         exit
         ;;
 
     -h|--help|help)
 
         helpUsage
-
         exit
         ;;
 
 esac
 
 # ---------------------------------------------------------
-# Интерактивное меню
+# Интерактивный режим
 # ---------------------------------------------------------
 
 while true; do
@@ -609,31 +535,24 @@ while true; do
 
     read -p " Хотите установить или настроить TorrServer? ($(colorize green Y)es|$(colorize yellow N)o) Для удаления введите «$(colorize red D)elete» " ydn </dev/tty
 
-    case $ydn in
+    case "$ydn" in
 
         [YyДд]*)
-
             initialCheck
-
             installTorrServer
-
             break
             ;;
 
         [DdУу]*)
-
             uninstall
-
             break
             ;;
 
         [NnНн]*)
-
             break
             ;;
 
         *)
-
             echo " Введите $(colorize green Y)es, $(colorize yellow N)o или $(colorize red D)elete"
             ;;
 
